@@ -6,9 +6,9 @@ from Scraper.ScrapeRevies import ScrapeRevies
 
 def main():
     print("Staring scraping books")
-    #books_scraper = ScrapeBooks()
-    #df_books = books_scraper.scrape_books()
-    #df_books.to_csv('data/books.csv', index=False)
+    books_scraper = ScrapeBooks()
+    df_books = books_scraper.scrape_books()
+    df_books.to_csv('data/books.csv', index=False)
 
     print("Starting scaping reviews")
     review_scraper = ScrapeRevies()
