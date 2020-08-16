@@ -1,3 +1,5 @@
+
+import os
 import pandas as pd
 
 from Scraper.ScrapeBooks import ScrapeBooks
@@ -5,6 +7,8 @@ from Scraper.ScrapeRevies import ScrapeRevies
 
 
 def main():
+    os.makedirs('data', exist_ok=True)
+
     print("Staring scraping books")
     books_scraper = ScrapeBooks()
     df_books = books_scraper.scrape_books()

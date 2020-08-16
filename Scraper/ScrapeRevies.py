@@ -8,6 +8,7 @@ import time
 
 import bs4
 import pandas as pd
+from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException, ElementClickInterceptedException, ElementNotVisibleException
@@ -18,6 +19,8 @@ from urllib.request import HTTPError
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
 
+import logger
+
 
 RATING_STARS_DICT = {'it was amazing': 5,
                      'really liked it': 4,
@@ -26,11 +29,15 @@ RATING_STARS_DICT = {'it was amazing': 5,
                      'did not like it': 1,
                      '': None}
 
+_COLUMNS = ["book_id", "review_url", "review_id",
+"rating", "user", "text", "num_likes", "shelves"]
+
 
 class ScrapeRevies(object):
     def __init__(self):
         self._base_url = "https://www.goodreads.com/"
         self._browser = 'chrome'
+        self._logger = logger.get_scrapper_logger()
 
     def _switch_reviews_mode(self, driver, book_id, sort_order, rating=''):
         """
@@ -41,34 +48,56 @@ class ScrapeRevies(object):
 
         SORTS = ['default', 'newest', 'oldest']
         edition_reviews=False
-        driver.execute_script(
-            'document.getElementById("reviews").insertAdjacentHTML("beforeend", \'<a data-remote="true" rel="nofollow"'
-            f'class="actionLinkLite loadingLink" data-keep-on-success="true" id="switch{rating}{sort_order}"' +
-            f'href="/book/reviews/{book_id}?rating={rating}&sort={SORTS[sort_order]}' +
-            ('&edition_reviews=true' if edition_reviews else '') + '">Switch Mode</a>\');' +
-            f'document.getElementById("switch{rating}{sort_order}").click()'
-        )
-        return True
+        try:
+            driver.execute_script(
+                'document.getElementById("reviews").insertAdjacentHTML("beforeend", \'<a data-remote="true" rel="nofollow"'
+                f'class="actionLinkLite loadingLink" data-keep-on-success="true" id="switch{rating}{sort_order}"' +
+                f'href="/book/reviews/{book_id}?rating={rating}&sort={SORTS[sort_order]}' +
+                ('&edition_reviews=true' if edition_reviews else '') + '">Switch Mode</a>\');' +
+                f'document.getElementById("switch{rating}{sort_order}").click()'
+            )
+        except:
+            self._logger.exception(f"Switch reviews mode failed for {book_id}")
+            return False
 
+        return True
 
     def _get_rating(self, node):
         if len(node.find_all('span', {'class': 'staticStars'})) > 0:
-            rating = node.find_all('span', {'class': 'staticStars'})[0]['title']
-            return RATING_STARS_DICT[rating]
-        return ''
+            try:
+                rating_num = node.find_all('span', {'class': 'staticStars'})[0]['title']
+                rating = RATING_STARS_DICT[rating_num]
+            except:
+                self._logger.warning(f"Ratings not found for {node['id']}")
+                rating = ''
+        else:
+            rating = ''
 
+        return rating
 
     def _get_user(self, node):
         if len(node.find_all('a', {'class': 'user'})) > 0:
-            return node.find_all('a', {'class': 'user'})[0]['href']
-        return ''
+            try:
+                user = node.find_all('a', {'class': 'user'})[0]['href']
+            except:
+                self._logger.warning(f"User not found for {node['id']}")
+                user = ''
+        else:
+            user = ''
 
+        return user
 
     def _get_date(self, node):
         if len(node.find_all('a', {'class': 'reviewDate createdAt right'})) > 0:
-            return node.find_all('a', {'class': 'reviewDate createdAt right'})[0].text
-        return ''
+            try:
+                date = node.find_all('a', {'class': 'reviewDate createdAt right'})[0].text
+            except:
+                self._logger.warning(f"date not found for {node['id']}")
+                date = ''
+        else:
+            date = ''
 
+        return date
 
     def _get_text(self, node):
 
@@ -85,6 +114,9 @@ class ScrapeRevies(object):
         if full_text:
             return full_text
 
+        if display_text == '':
+            self._logger.warning(f"Display text not found for {node['id']}")
+
         return display_text
 
 
@@ -93,6 +125,8 @@ class ScrapeRevies(object):
             likes = node.find('span', {'class': 'likesCount'}).text
             if 'likes' in likes:
                 return int(likes.split()[0])
+
+        self._logger.warning(f"Number of likes not found for {node['id']}")
         return 0
 
 
@@ -106,20 +140,11 @@ class ScrapeRevies(object):
 
 
     def _scrape_reviews_on_current_page(self, driver, url, book_id):
-
         reviews = []
-
-        # Disable pop up
-        try:
-             button = driver.find_element_by_xpath("//button[@class='gr-iconButton']")
-             driver.execute_script("arguments[0].click();", button)
-
-        except Exception as ex:
-            print(ex)
-            pass
 
         # Pull the page source, load into BeautifulSoup, and find all review nodes.
         source = driver.page_source
+
         soup = bs4.BeautifulSoup(source, 'lxml')
         nodes = soup.find_all('div', {'class': 'review'})
 
@@ -185,11 +210,11 @@ class ScrapeRevies(object):
                     else:
                         return reviews
                 except NoSuchElementException or ElementNotInteractableException:
-                    print('ERROR: Could not find next page link! Re-scraping this book.')
+                    self._logger.error(f'Could not find next page link! Re-scraping {book_id} book.')
                     reviews = self._get_reviews_first_ten_pages(driver, book_id, sort_order)
                     return reviews
                 except ElementNotVisibleException:
-                    print('ERROR: Pop-up detected, reloading the page.')
+                    self._logger.error(f'Pop-up detected, reloading the page {url}.')
                     reviews = self._get_reviews_first_ten_pages(driver, book_id, sort_order)
                     return reviews
 
@@ -198,14 +223,20 @@ class ScrapeRevies(object):
             reviews = self._get_reviews_first_ten_pages(driver, book_id, sort_order)
             return reviews
 
+        except:
+            #self._logger.exception(f"Failed during handling {book_id}")
+            pass
+
         if self._check_for_duplicates(reviews):
-            print('ERROR: Duplicates found! Re-scraping this book.')
+            self._logger.error(f'Duplicates found! Re-scraping {book_id} book.')
             reviews = self._get_reviews_first_ten_pages(driver, book_id, sort_order)
             return reviews
 
         return reviews
 
     def scrape_reviews(self, df_books):
+        self._logger.info("Starting scaping reviews")
+
         if self._browser.lower() == 'chrome':
             try:
                 driver = webdriver.Chrome()
@@ -217,12 +248,10 @@ class ScrapeRevies(object):
             except:
                 driver = webdriver.Firefox(executable_path=GeckoDriverManager().install())
 
-        columns = ["book_id", "review_url", "review_id",
-        "rating", "user", "text", "num_likes", "shelves"]
-        df_reviews = pd.DataFrame(columns=columns)
 
-        for book_id in df_books['book_id']:
-            start = time.time()
+        df_reviews = pd.DataFrame(columns=_COLUMNS)
+
+        for book_id in tqdm(df_books['book_id'], desc="Books"):
             try:
                 reviews = self._get_reviews_first_ten_pages(driver, book_id, 0)
 
@@ -230,12 +259,12 @@ class ScrapeRevies(object):
                     for review in reviews:
                         df_reviews = df_reviews.append(review, ignore_index=True)
 
+                self._logger.info(f"Reviews scaped from book {book_id}")
             except HTTPError:
                 pass
-
-            elapse = time.time() - start
-            print(f"Procced with {book_id}, time took {elapse}")
+            except:
+                self._logger.exception(f"Reviews of book {book_id} could not been scraped")
 
         driver.quit()
-        print(f"FINISHED")
+        self._logger.info("FINISHED")
         return df_reviews
